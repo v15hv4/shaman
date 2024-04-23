@@ -1,1 +1,2 @@
-
+tyro==0.8.3
+pyinstaller==6.6.0

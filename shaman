@@ -1,207 +1,283 @@
-#!/usr/bin/python3
-import subprocess
+#!/usr/bin/env python3
+
 import os
 import sys
 import json
-import argparse, argcomplete
+import tyro
+import subprocess
+import multiprocessing.dummy as mp
 
-class shaman():
-    def __init__(self, **kwargs):
-        self.homeDir = os.path.expanduser("~")
-        self.path = self.homeDir + os.sep + ".shaman"
-        self.filePath = self.path + os.path.sep + "pseudonymMap.json"
+from rich import print
+from typing import Optional, List, Any, Annotated, Literal
 
-        dirExists = self.checkdir()
+# path to config file
+CONFIG_PATH = os.path.expanduser(
+    os.environ.get("SHAMAN_CONFIG_PATH", "~/.shaman/default.json")
+)
 
-        fileExists = os.path.isfile(self.filePath)
+# potential username list for autodetect (precedence: L > R)
+POTENTIAL_USERNAMES = ("ubuntu", "debian", "root")
 
-        if fileExists:
-            # read path 
-            self.pseudonym_map = self.readJson(self.filePath)
+
+# global utility functions
+def _info(message: str):
+    print(f"[cyan]{message}[/cyan]")
+
+
+def _success(message: str):
+    print(f"[green]{message}[/green]")
+
+
+def _error(message: str, e: Any):
+    print(f"[red]{message}: {e}[/red]")
+    sys.exit()
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data
+
+    except Exception as e:
+        _error("Unable to read JSON file in path", e)
+        return {}
+
+
+def _write_json(path: str, data: dict):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    except Exception as e:
+        _error("Unable to write JSON file in path", e)
+
+
+# host autocompletion
+def _autocompletion():
+    if os.path.isfile(CONFIG_PATH):
+        return _read_json(CONFIG_PATH).keys()
+    else:
+        return []
+
+
+class Shaman:
+    def __init__(self):
+        pseudonym_map = {}
+        if os.path.isfile(CONFIG_PATH):
+            pseudonym_map = _read_json(CONFIG_PATH)
         else:
-            # empty pseudonym map
-            self.pseudonym_map = {}
-            self.writeJson(self.filePath, self.pseudonym_map)
-        self.action()
+            _write_json(CONFIG_PATH, pseudonym_map)
+        self.pseudonym_map = pseudonym_map
 
-    def action(self):
-        #Argument Parsing
-        args = self.argument_parser()
+    # local utility functions
+    def _detect_username(self, ip: str, port: Optional[int] = 22):
+        for username in POTENTIAL_USERNAMES:
+            cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=true -Cq {username}@{ip} -p {port} exit"
+            invalid = subprocess.run(cmd, shell=True).returncode
 
-        #print(args)
+            if not invalid:
+                _info(f"Detected username: {username}")
+                return username
 
-        if args.command == "add":
-            self.add(args.alias, args.username, args.ip, args.port)
-        elif args.command == "remove":
-            self.remove(args.alias)
-        elif args.command == "list":
-            self.list()
-        elif args.command == "get":
-            self.get(args.aliases)
-        elif args.command == "version":
-            self.version()
-        elif args.command == "refresh":
-            self.refresh(args.file)
-        elif args.command == "run":
-            self.run(args.alias)
+        # default to first candidate username
+        username = POTENTIAL_USERNAMES[0]
+        _info(f"Unable to detect username, defaulting to {username}")
+        return username
 
-    def argument_parser(self):
-        parser = argparse.ArgumentParser(prog="shaman", description='A simple python script to manage ssh hosts and ips', epilog='Developed by Arjun Somvanshi under the GNU General Public License v3')
+    def _refresh_peer(self, peer: dict):
+        pseudonym = peer["DNSName"].split(".")[0]
+        ip = peer["TailscaleIPs"][0]
 
-        subparser = parser.add_subparsers(dest="command")
-        subparser.required = True
-
-        # Get all the stored data
-        data = self.readJson(self.filePath)
-
-        # arguments for add
-        add_args = subparser.add_parser("add")
-        add_args.add_argument("--alias", type=str, help="Unique alias to represent this machine")
-        add_args.add_argument("--username", type=str, help="Username on the host machine", default="ubuntu")
-        add_args.add_argument("--ip", type=str, help="Public IP address of the machine")
-        add_args.add_argument("--port", type=str, help="Port to use for ssh", default=22)
-
-        # arguments for remove
-        remove_args = subparser.add_parser("remove")
-        remove_args.add_argument("alias", type=str, help="Remove the machine associated with an alias", choices=list(data.keys()))
-
-        # arguments for listing
-        list_args = subparser.add_parser("list")
-
-        # arguments for refresh
-        refresh_args = subparser.add_parser("refresh")
-        refresh_args.add_argument("--file", type=str, help="File to read instead of using Tailscale dynamically", default=None)
-
-        # arguments for getting details related to an alias
-        get_args = subparser.add_parser("get")
-        get_args.add_argument("aliases", type=str, nargs="+", help="get the details of the machine(s) with the given alias(es)", choices=list(data.keys()))
-
-        # arguments to run
-        run_args = subparser.add_parser("run")
-        run_args.add_argument("alias", type=str, help="ssh into an aliased machine", choices=list(data.keys()))
-
-        # arguments for version
-        version_args = subparser.add_parser("version")
-
-        argcomplete.autocomplete(parser)
-
-        return parser.parse_args()
-
-    def readJson(self, path):
         try:
-            with open(path, "r") as f:
-               data = json.load(f)
-        except Exception as e:
-            self.error("Tried reading JSON file in path", e)
-        else:
-            return data
+            if "tag:server" in peer["Tags"]:
+                self.add(pseudonym, ip=ip)
 
-    def writeJson(self, path, data):
-        #print("Entered here somehow")
-        try:
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            self.error("Tried writing JSON file in path", e)
-            sys.exit(1)
+        except KeyError:
+            _info(f"Skipping {pseudonym}")
 
-    def error(self, message, e):
-        print(message)
-        print("****")
-        print(str(e))
-        print("****")
+    # commands
+    def add(
+        self,
+        pseudonym: str,
+        /,
+        ip: str,
+        username: Optional[str] = None,
+        port: Optional[int] = 22,
+    ):
+        """
+        Add a host to your shaman config.
 
-    def checkdir(self):
-        if os.path.isdir(self.path):
-            return True
-        else:
-            try:
-                os.mkdir(self.path)
-            except Exception as e:
-                self.error("Tried making application directory but failed", e)
-                sys.exit(1)
-            else:
-                return False
+        :param pseudonym: Unique alias to represent this machine
+        :param ip: Public IP address of the machine
+        :param username: Username on the host machine
+        :param port: Port to use for ssh
+        """
 
-    def add(self, pseudonym, username, ip, port):
-        if username == '':
-            username = "ubuntu"
-        if port == '':
-            port = "22"
+        # attempt to autodetect username
+        if username is None:
+            username = self._detect_username(ip, port)
+
+        # confirm override
         if pseudonym in self.pseudonym_map:
-            ch = input("This pseudonym already exists do you want to replace it? [y/N]:")
-            if ch.lower() in ["y", "yes"]:
-                self.pseudonym_map[pseudonym] = (username, ip, port)
-                self.writeJson(self.filePath, self.pseudonym_map)
-        else:
-            self.pseudonym_map[pseudonym] = (username, ip, port)
-            self.writeJson(self.filePath, self.pseudonym_map)
+            ch = input(
+                "This pseudonym already exists. Do you want to replace it? [y/N]: "
+            )
+            if ch.lower() not in ["y", "yes"]:
+                return
 
-    def remove(self, pseudonym):
+        self.pseudonym_map[pseudonym] = (username, ip, port)
+        _write_json(CONFIG_PATH, self.pseudonym_map)
+
+        _success(f"Added pseudonym: {pseudonym}")
+
+    def remove(
+        self,
+        pseudonym: str,
+    ):
+        """
+        Remove a host from your shaman config.
+
+        :param pseudonym: Alias of the machine to remove
+        """
+
         try:
             del self.pseudonym_map[pseudonym]
-        except Exception as e:
-            self.error("Tried deleting entry but some error has occured", e)
-        else:
-            self.writeJson(self.filePath, self.pseudonym_map)
+            _write_json(CONFIG_PATH, self.pseudonym_map)
+            _success(f"Removed pseudonym: {pseudonym}")
 
-    def refresh(self, file):
-        if file is None:
-            result = subprocess.run(['tailscale', 'status', '--json'], stdout=subprocess.PIPE)
-            result = json.loads(result.stdout.strip())
+        except Exception as e:
+            _error("Unable to remove pseudonym from config", e)
+
+    def refresh(
+        self,
+        file: Optional[str] = None,
+        quiet: bool = False,
+    ):
+        """
+        Update your shaman config with Tailscale hosts.
+
+        :param file: JSON file to read instead of using Tailscale dynamically
+        """
+
+        if file is not None:
+            result = _read_json(file)
         else:
-            result = self.readJson(file)
-        for peers in result["Peer"]:
-            try:
-                if "tag:server" in result["Peer"][peers]["Tags"]:
-                    print("Writing " + result["Peer"][peers]["HostName"] + " to map...")
-                    self.add(result["Peer"][peers]["HostName"], '', result["Peer"][peers]["TailscaleIPs"][0], '')
-            except KeyError:
-                print("Skipping " + result["Peer"][peers]["HostName"] + "...")
-        print("Refreshed list from Tailscale")
+            result_json = subprocess.run(
+                "tailscale status --json".split(),
+                stdout=subprocess.PIPE,
+            )
+            result = json.loads(result_json.stdout.strip())
+
+        # split incoming peer list into 'new' and 'deferred' for concurrent non-blocking addition
+        new_peers = {}
+        deferred_peers = {}
+
+        if quiet:  # override everything automatically
+            new_peers = result["Peer"]
+        else:
+            for peer_id, peer in result["Peer"].items():
+                pseudonym = peer["DNSName"].split(".")[0]
+                if pseudonym in self.pseudonym_map.keys():
+                    deferred_peers[peer_id] = peer
+                else:
+                    new_peers[peer_id] = peer
+
+        # add new peers concurrently
+        with mp.Pool() as p:
+            p.map(self._refresh_peer, new_peers.values())
+
+        # add deferred peers sequentially
+        for peer in deferred_peers.values():
+            self._refresh_peer(peer)
+
+        _success(f"Refreshed hosts from {'file' if file else 'Tailscale'}.")
 
     def list(self):
+        """
+        List all hosts managed by shaman.
+        """
         for entry in self.pseudonym_map:
             print("**********")
-            print("Pseudonym: ", entry)
+            print("Pseudonym:", entry)
             entryValue = self.pseudonym_map[entry]
-            print("Username", entryValue[0])
-            print("IP", entryValue[1], end="\t")
-            print("Port", entryValue[2])
+            print("Username:", entryValue[0])
+            print("IP:", entryValue[1], end="\t")
+            print("Port:", entryValue[2])
             print("**********")
 
-    def get(self, pseudonyms):
-        data = self.readJson(self.filePath)
+    def get(self, pseudonyms: List[str], /):
+        """
+        Get details of machines with the given aliases.
+
+        :param pseudonyms: List of aliases to get
+        """
+
+        if len(pseudonyms) < 1:
+            print("No pseudonyms provided.")
+            return
 
         for pseudonym in pseudonyms:
             try:
-                pseudonym = "".join(pseudonym)
-                entryValue = data[pseudonym]
+                entryValue = self.pseudonym_map[pseudonym]
+                print("**********")
+                print("Pseudonym:", pseudonym)
+                print("Username:", entryValue[0])
+                print("IP:", entryValue[1], end="\t")
+                print("Port:", entryValue[2])
+                print("**********")
 
-                print("**********")
-                print("Pseudonym: ", pseudonym)
-                print("Username", entryValue[0])
-                print("IP", entryValue[1], end="\t")
-                print("Port", entryValue[2])
-                print("**********")
             except KeyError as e:
-                print("Could not find an IP with the alias", e)
-            except Exception as e:
-                print("Unrecognized exception...", e)
+                _error("Could not find a host with the given pseudonym", e)
 
-    def run(self, pseudonym):
+            except Exception as e:
+                _error("Unable to get host", e)
+
+    def run(
+        self,
+        pseudonym: Literal[tuple(_autocompletion())],  # type: ignore
+        /,
+        tmux: Annotated[Optional[str], tyro.conf.arg(aliases=["-t"])] = None,
+    ):
+        """
+        Use shaman to SSH into a host.
+
+        :param pseudonym: Alias of target host
+        :param tmux: Tmux session to attach to
+        """
+
+        if pseudonym not in self.pseudonym_map:
+            _error(f"Pseudonym not found", Exception(pseudonym))
+
         entryValue = self.pseudonym_map[pseudonym]
         cmd = f"ssh {entryValue[0]}@{entryValue[1]} -p {entryValue[2]}"
+
+        if tmux is not None:
+            cmd += f" -t tmux -u new -As{tmux}"
+
         subprocess.call(cmd, text=True, shell=True)
 
     def version(self):
         print("****************")
-        print("shaman v1.0.0")
+        print("shaman v1.1.0")
         print("Developed by Arjun Somvanshi under the GNU General Public License")
         print("****************")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     try:
-        client = shaman()
+        shaman = Shaman()
+        tyro.extras.subcommand_cli_from_dict(
+            {
+                "add": shaman.add,
+                "remove": shaman.remove,
+                "refresh": shaman.refresh,
+                "list": shaman.list,
+                "get": shaman.get,
+                "run": shaman.run,
+                "version": shaman.version,
+            }
+        )
+
     except KeyboardInterrupt:
-    	print("Keyboard interrupt detected, closing...")
+        print("Keyboard interrupt detected, closing.")
