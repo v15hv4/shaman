@@ -7,8 +7,7 @@ CURRENT_SHELL=$(echo $SHELL | rev | cut -d/ -f 1 | rev)
 echo "Detected shell: $CURRENT_SHELL"
 
 # copy binary
-mkdir ~/.shaman
-mkdir -p ~/.local/bin/
+mkdir -p ~/.local/bin/ ~/.shaman
 cp shaman ~/.local/bin/
 
 # add to path
@@ -23,19 +22,21 @@ echo "PATH=$PATH:~/.local/bin" >> $HOME/$RC
 
 # install dependencies
 # TODO: try to avoid using --break-system-packages
+echo "Installing dependencies..."
 if pip install -r requirements.txt; then :
 elif pip install -r requirements.txt --break-system-packages; then :
 else echo "ERROR: Unable to install dependencies. Please install them manually."
 fi
 
 # enable autocomplete
+echo "Installing autocomplete..."
 if [ $CURRENT_SHELL = "bash" ]; then
 	completion_dir=${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions/
 	mkdir -p $completion_dir
 	shaman --tyro-write-completion bash ${completion_dir}/shaman
 elif [ $CURRENT_SHELL = "zsh" ]; then
 	mkdir -p ~/.zfunc
-	shaman --tyro-write-completion zsh ~/.zfunc/shaman
+	shaman --tyro-write-completion zsh ~/.zfunc/_shaman
 	echo "fpath+=~/.zfunc" >> ~/.zshrc
 	echo "autoload -Uz compinit && compinit" >> ~/.zshrc
 fi
