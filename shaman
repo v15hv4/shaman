@@ -63,6 +63,10 @@ def _autocompletion():
 
 class Shaman:
     def __init__(self):
+        # create config directory if it doesn't exist
+        os.makedirs(os.path.expanduser("~/.shaman"), exist_ok=True)
+
+        # read config
         pseudonym_map = {}
         if os.path.isfile(CONFIG_PATH):
             pseudonym_map = _read_json(CONFIG_PATH)
