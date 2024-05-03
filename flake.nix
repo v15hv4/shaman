@@ -12,7 +12,7 @@
       pythonWithPackages = python.withPackages (ps: [ ps.tyro ]);
     in rec {
       packages.shaman = pkgs.writeScriptBin "shaman" ''
-        ${pythonWithPackages}/bin/python3 ${self}/shaman
+        ${pythonWithPackages}/bin/python3 ${self}/shaman "$@"
       '';
 
       apps.default = {
